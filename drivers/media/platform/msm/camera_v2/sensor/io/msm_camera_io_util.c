@@ -107,6 +107,17 @@ void msm_camera_io_memcpy(void __iomem *dest_addr,
 	msm_camera_io_dump(dest_addr, len);
 }
 
+void msm_camera_io_memcpy_mb(void __iomem *dest_addr,
+	void __iomem *src_addr, u32 len)
+{
+	int i;
+	u32 *d = (u32 *) dest_addr;
+	u32 *s = (u32 *) src_addr;
+
+	for (i = 0; i < (len / 4); i++)
+		msm_camera_io_w_mb(*s++, d++);
+}
+
 int msm_cam_clk_sel_src(struct device *dev, struct msm_cam_clk_info *clk_info,
 		struct msm_cam_clk_info *clk_src_info, int num_clk)
 {
@@ -473,6 +484,9 @@ int msm_camera_set_gpio_table(struct msm_gpio_set_tbl *gpio_tbl,
 int msm_camera_config_single_vreg(struct device *dev,
 	struct camera_vreg_t *cam_vreg, struct regulator **reg_ptr, int config)
 {
+#ifdef CONFIG_MFD_RT5033_RESET_WA
+	int rt_rc = 0;
+#endif
 	int rc = 0;
 	if (config) {
 		if (!dev || !cam_vreg || !reg_ptr) {
@@ -480,33 +494,67 @@ int msm_camera_config_single_vreg(struct device *dev,
 			goto vreg_get_fail;
 		}
 		CDBG("%s enable %s\n", __func__, cam_vreg->reg_name);
-		*reg_ptr = regulator_get(dev, cam_vreg->reg_name);
-		if (IS_ERR_OR_NULL(*reg_ptr)) {
-			pr_err("%s: %s get failed\n", __func__,
-				cam_vreg->reg_name);
-			*reg_ptr = NULL;
-			goto vreg_get_fail;
-		}
-		if (cam_vreg->type == REG_LDO) {
-			rc = regulator_set_voltage(
-				*reg_ptr, cam_vreg->min_voltage,
-				cam_vreg->max_voltage);
-			if (rc < 0) {
-				pr_err("%s: %s set voltage failed\n",
-					__func__, cam_vreg->reg_name);
-				goto vreg_set_voltage_fail;
+		if (!strncmp(cam_vreg->reg_name, "cam_vdig", 7)) {
+#if defined(CONFIG_SEC_ROSSA_PROJECT) || defined(CONFIG_SEC_J1_PROJECT)
+			*reg_ptr = regulator_get(dev, "CAM_SENSOR_IO_1.8V");
+#else
+			*reg_ptr = regulator_get(dev, "CAM_SENSOR_CORE_1.25V");
+#endif
+			if (IS_ERR(*reg_ptr)) {
+				pr_err("%s: %s get failed\n", __func__,
+						cam_vreg->reg_name);
+				*reg_ptr = NULL;
+				goto vreg_get_fail;
 			}
-			if (cam_vreg->op_mode >= 0) {
-				rc = regulator_set_optimum_mode(*reg_ptr,
-					cam_vreg->op_mode);
+		} else if (!strncmp(cam_vreg->reg_name, "cam_vana", 8)) {
+			*reg_ptr = regulator_get(dev, "CAM_SENSOR_A2.8V");
+			if (IS_ERR(*reg_ptr)) {
+				pr_err("%s: %s get failed\n", __func__,
+						cam_vreg->reg_name);
+				*reg_ptr = NULL;
+				goto vreg_get_fail;
+			}
+		} else {
+			*reg_ptr = regulator_get(dev, cam_vreg->reg_name);
+			if (IS_ERR_OR_NULL(*reg_ptr)) {
+				pr_err("%s: %s get failed\n", __func__,
+					cam_vreg->reg_name);
+				*reg_ptr = NULL;
+				goto vreg_get_fail;
+			}
+			if (cam_vreg->type == REG_LDO) {
+				rc = regulator_set_voltage(
+					*reg_ptr, cam_vreg->min_voltage,
+					cam_vreg->max_voltage);
 				if (rc < 0) {
-					pr_err(
-					"%s: %s set optimum mode failed\n",
-					__func__, cam_vreg->reg_name);
-					goto vreg_set_opt_mode_fail;
+					pr_err("%s: %s set voltage failed\n",
+						__func__, cam_vreg->reg_name);
+					goto vreg_set_voltage_fail;
+				}
+				if (cam_vreg->op_mode >= 0) {
+					rc = regulator_set_optimum_mode(*reg_ptr,
+						cam_vreg->op_mode);
+					if (rc < 0) {
+						pr_err(
+						"%s: %s set optimum mode failed\n",
+						__func__, cam_vreg->reg_name);
+						goto vreg_set_opt_mode_fail;
+					}
 				}
 			}
 		}
+#ifdef CONFIG_MFD_RT5033_RESET_WA
+#if defined(CONFIG_SEC_GRANDMAX_PROJECT)
+		if (!strncmp(cam_vreg->reg_name, "cam_vana", 8)){
+			rt_rc = regulator_get_status(*reg_ptr);
+			if((rt_rc == 2) || (rt_rc == 8)){
+				BUG_ON(1);
+			} else {
+				pr_err("[RT5033] result : 0x%x\n", rt_rc);
+			}
+		}
+#endif
+#endif
 		rc = regulator_enable(*reg_ptr);
 		if (rc < 0) {
 			pr_err("%s: %s enable failed\n",
@@ -542,6 +590,16 @@ vreg_set_voltage_fail:
 	*reg_ptr = NULL;
 
 vreg_get_fail:
+#ifdef CONFIG_MFD_RT5033_RESET_WA
+#if defined(CONFIG_SEC_GRANDMAX_PROJECT)
+	if (!strncmp(cam_vreg->reg_name, "cam_vana", 8)){
+		pr_err("%s: %s get failed\n", __func__,	cam_vreg->reg_name);
+	}
+	if (!strncmp(cam_vreg->reg_name, "cam_vdig", 8)){
+		pr_err("%s: %s get failed\n", __func__,	cam_vreg->reg_name);
+	}
+#endif
+#endif
 	return -ENODEV;
 }
 

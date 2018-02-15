@@ -1870,9 +1870,12 @@ static int msm_vidc_load_resources(int flipped_state,
 		dprintk(VIDC_ERR, "HW is overloaded, needed: %d max: %d\n",
 			num_mbs_per_sec, core->resources.max_load);
 		msm_vidc_print_running_insts(core);
+#if 0 /* Samsung skips the overloaded error return  */		
 		inst->state = MSM_VIDC_CORE_INVALID;
 		msm_comm_kill_session(inst);
 		return -EBUSY;
+#endif	
+
 	}
 
 	hdev = core->device;
@@ -3454,7 +3457,11 @@ static int msm_vidc_load_supported(struct msm_vidc_inst *inst)
 			mutex_lock(&inst->sync_lock);
 			msm_vidc_print_running_insts(inst->core);
 			mutex_unlock(&inst->sync_lock);
+/* MMRND_AVRC. Start */
+#if 0 // Samsung skips the overloaded error return
 			return -EINVAL;
+#endif
+/* MMRND_AVRC. End */
 		}
 	}
 	return 0;

@@ -22,6 +22,7 @@
 
 #include "mdss_panel.h"
 #include "mdss_dsi_cmd.h"
+#include "mdss_dsi_samsung_panel.h"
 
 #define MMSS_SERDES_BASE_PHY 0x04f01000 /* mmss (De)Serializer CFG */
 
@@ -45,9 +46,12 @@
 #define MIPI_DSI_PANEL_720P_PT	8
 #define DSI_PANEL_MAX	8
 
+#define MDSS_DSI_HW_REV_103_1           0x10030001      /* 8916 */
+
 #define MDSS_DSI_HW_REV_100_1		0x10000001	/* 8x26    */
 #define MDSS_DSI_HW_REV_100_2		0x10000002	/* 8x26v2  */
 #define MDSS_DSI_HW_REV_103_1		0x10030001	/* 8916/8936 */
+#define CMD_REQ_SINGLE_TX 0x0010
 
 enum {		/* mipi dsi panel */
 	DSI_VIDEO_MODE,
@@ -83,6 +87,7 @@ enum dsi_panel_bl_ctrl {
 	BL_PWM,
 	BL_WLED,
 	BL_DCS_CMD,
+	BL_GPIO_SWING,
 	UNKNOWN_CTRL,
 };
 
@@ -168,7 +173,7 @@ enum dsi_pm_type {
 extern struct device dsi_dev;
 extern u32 dsi_irq;
 extern struct mdss_dsi_ctrl_pdata *ctrl_list[];
-
+extern unsigned int gv_manufacture_id;
 struct dsiphy_pll_divider_config {
 	u32 clk_rate;
 	u32 fb_divider;
@@ -210,13 +215,14 @@ struct dsi_clk_desc {
 	u32 pre_div_func;
 };
 
-
 struct dsi_panel_cmds {
 	char *buf;
 	int blen;
 	struct dsi_cmd_desc *cmds;
 	int cmd_cnt;
 	int link_state;
+	char *read_size;
+	char *read_startoffset;
 };
 
 struct dsi_kickoff_action {
@@ -256,6 +262,41 @@ enum {
 #define DSI_EV_MDP_FIFO_UNDERFLOW	0x0002
 #define DSI_EV_DSI_FIFO_EMPTY		0x0003
 #define DSI_EV_MDP_BUSY_RELEASE		0x80000000
+#define MAX_EXTRA_POWER_GPIO 0x3
+
+struct mdss_dsi_panel_cmd_list {
+	struct dsi_panel_cmds panel_manufacture_id_cmds;
+	struct dsi_panel_cmds panel_manufacture_id_register_set_cmds;
+	struct dsi_panel_cmds disp_on_seq;
+	struct dsi_panel_cmds disp_off_seq;
+	struct dsi_panel_cmds disp_on_cmd;
+	struct dsi_panel_cmds disp_off_cmd;
+	struct dsi_panel_cmds display_off_cmd;
+	struct dsi_panel_cmds hsync_on_seq;
+	struct dsi_panel_cmds partialdisp_on_cmd;
+	struct dsi_panel_cmds partialdisp_off_cmd;
+	struct dsi_panel_cmds mtp_enable_cmd;
+	struct dsi_panel_cmds mtp_disable_cmd;
+	struct dsi_panel_cmds rddpm_cmd;
+	struct dsi_panel_cmds brightness_cmd;
+	struct dsi_panel_cmds aid_cmd_list;
+	struct dsi_panel_cmds aclcont_cmd_list;
+	struct dsi_panel_cmds acl_cmd_list;
+	struct dsi_panel_cmds acl_off_cmd;
+	struct dsi_panel_cmds elvss_cmd_list;
+	struct dsi_panel_cmds smart_acl_elvss_cmd_list;
+	struct dsi_panel_cmds gamma_cmd_list;
+	struct dsi_panel_cmds mtp_read_sysfs_cmds;
+	struct dsi_panel_cmds nv_mtp_register_set_cmds;
+	struct dsi_panel_cmds nv_mtp_read_cmds;
+};
+
+struct mdss_dsi_panel_map_table_list {
+	struct candella_lux_map candela_map_table;
+	struct cmd_map aid_map_table;
+	struct cmd_map acl_map_table;
+	struct cmd_map smart_acl_elvss_map_table;
+};
 
 struct mdss_dsi_ctrl_pdata {
 	int ndx;	/* panel_num */
@@ -266,6 +307,12 @@ struct mdss_dsi_ctrl_pdata {
 	int (*check_read_status) (struct mdss_dsi_ctrl_pdata *pdata);
 	int (*cmdlist_commit)(struct mdss_dsi_ctrl_pdata *ctrl, int from_mdp);
 	void (*switch_mode) (struct mdss_panel_data *pdata, int mode);
+	int (*panel_extra_power) (struct mdss_panel_data *pdata, int enable);
+	int (*panel_reset) (struct mdss_panel_data *pdata, int enable);
+	int (*panel_gpio_request) (struct mdss_dsi_ctrl_pdata *ctrl_pdata);
+	int (*dimming_init) (struct mdss_panel_data *pdata);
+	int (*event_handler) (struct mdss_panel_data *pdata, int e);
+	int (*registered) (struct mdss_panel_data *pdata);
 	struct mdss_panel_data panel_data;
 	unsigned char *ctrl_base;
 	struct dss_io_data ctrl_io;
@@ -287,6 +334,7 @@ struct mdss_dsi_ctrl_pdata {
 	int irq_cnt;
 	int rst_gpio;
 	int disp_en_gpio;
+	int panel_extra_power_gpio[MAX_EXTRA_POWER_GPIO];
 	int bklt_en_gpio;
 	int mode_gpio;
 	int bklt_ctrl;	/* backlight ctrl */
@@ -309,6 +357,8 @@ struct mdss_dsi_ctrl_pdata {
 	struct dsi_panel_cmds off_cmds;
 	struct dsi_panel_cmds status_cmds;
 	u32 status_cmds_rlen;
+	struct mdss_dsi_panel_cmd_list cmd_list;
+	struct mdss_dsi_panel_map_table_list map_table_list;
 	u32 status_value;
 	u32 status_error_count;
 
@@ -401,6 +451,7 @@ int mdss_dsi_panel_init(struct device_node *node,
 		bool cmd_cfg_cont_splash);
 int mdss_panel_get_dst_fmt(u32 bpp, char mipi_mode, u32 pixel_packing,
 				char *dst_format);
+int get_lcd_attached(void);
 
 static inline const char *__mdss_dsi_pm_name(enum dsi_pm_type module)
 {

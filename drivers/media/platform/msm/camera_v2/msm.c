@@ -42,6 +42,11 @@ spinlock_t msm_eventq_lock;
 
 static struct pid *msm_pid;
 spinlock_t msm_pid_lock;
+static int  module_init_status;
+struct msm_cam_dummy_queue {
+	wait_queue_head_t state_wait;
+};
+static struct msm_cam_dummy_queue cam_dummy_queue;
 
 #define msm_dequeue(queue, type, member) ({				\
 	unsigned long flags;					\
@@ -338,6 +343,23 @@ int msm_sd_unregister(struct msm_sd_subdev *msm_subdev)
 	return 0;
 }
 
+int msm_cam_get_module_init_status(void)
+{
+	int rc;
+	pr_warn("msm_cam_get_module_init_status : start\n");
+	if (module_init_status == 1)
+		return 0;
+	while (1) {
+		rc = wait_event_interruptible(cam_dummy_queue.state_wait,
+			(module_init_status == 1));
+		if (rc == -ETIMEDOUT)
+			continue;
+		else if (rc == 0)
+			break;
+	}
+	pr_err("msm_cam_get_module_init_status : end %d\n", rc);
+	return 0;
+}
 int msm_create_session(unsigned int session_id, struct video_device *vdev)
 {
 	struct msm_session *session = NULL;
@@ -554,6 +576,13 @@ static long msm_private_ioctl(struct file *file, void *fh,
 	unsigned int session_id;
 	unsigned int stream_id;
 	unsigned long spin_flags = 0;
+
+	if (cmd == MSM_CAM_V4L2_IOCTL_NOTIFY_MODULE_STATUS) {
+		module_init_status = *(int *) arg;
+		if (module_init_status)
+			wake_up(&cam_dummy_queue.state_wait);
+		return rc;
+	}
 
 	session_id = event_data->session_id;
 	stream_id = event_data->stream_id;
@@ -1073,6 +1102,7 @@ static int msm_probe(struct platform_device *pdev)
 	spin_lock_init(&msm_eventq_lock);
 	spin_lock_init(&msm_pid_lock);
 	INIT_LIST_HEAD(&ordered_sd_list);
+	init_waitqueue_head(&cam_dummy_queue.state_wait);
 	goto probe_end;
 
 v4l2_fail:

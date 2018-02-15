@@ -27,9 +27,13 @@
 #include "mdss_dsi.h"
 #include "mdss_debug.h"
 
+#if defined(CONFIG_FB_MSM_MIPI_HX8389C_QHD_VIDEO_PANEL)
+extern unsigned int lcd_id;
+#endif
+
 static int mdss_dsi_pinctrl_set_state(struct mdss_dsi_ctrl_pdata *ctrl_pdata,
 					bool active);
-
+unsigned int gv_manufacture_id;
 static int mdss_dsi_regulator_init(struct platform_device *pdev)
 {
 	int rc = 0;
@@ -100,12 +104,36 @@ static int mdss_dsi_panel_power_on(struct mdss_panel_data *pdata, int enable)
 				goto error_enable;
 			}
 		}
+#if !defined(CONFIG_FB_MSM_MIPI_HIMAX_WVGA_VIDEO_PANEL)
+		if (mdss_dsi_pinctrl_set_state(ctrl_pdata, true))
+			pr_debug("reset enable: pinctrl not enabled\n");
+#endif
+#if defined(CONFIG_FB_MSM_MIPI_HX8389C_QHD_VIDEO_PANEL)
+		mdelay(10);
+#endif
+#if defined(CONFIG_FB_MSM_MIPI_S6D2AA0X_HD_VIDEO_PANEL) || defined(CONFIG_FB_MSM_MIPI_HIMAX_WVGA_VIDEO_PANEL)
+	if (gpio_is_valid(ctrl_pdata->disp_en_gpio)) {
+		ret = gpio_request(ctrl_pdata->disp_en_gpio,
+						"disp_enable");
+		if (ret) {
+			pr_err("request disp_en gpio failed, ret=%d\n",
+				       ret);
+		} else {
+			gpio_set_value((ctrl_pdata->disp_en_gpio), 1);
+		}
+	}
+#endif
+		if (ctrl_pdata->panel_extra_power) {
+			ret = ctrl_pdata->panel_extra_power(pdata, enable);
+			if (ret)
+				pr_err("%s : failed to enable extra power\n", __func__);
+		} else
+			pr_err("%s : panel_extra_power is null", __func__);
 
 		if (!pdata->panel_info.mipi.lp11_init) {
 			if (mdss_dsi_pinctrl_set_state(ctrl_pdata, true))
 				pr_debug("reset enable: pinctrl not enabled\n");
-
-			ret = mdss_dsi_panel_reset(pdata, 1);
+			ret = ctrl_pdata->panel_reset(pdata, 1);
 			if (ret) {
 				pr_err("%s: Panel reset failed. rc=%d\n",
 						__func__, ret);
@@ -113,7 +141,7 @@ static int mdss_dsi_panel_power_on(struct mdss_panel_data *pdata, int enable)
 			}
 		}
 	} else {
-		ret = mdss_dsi_panel_reset(pdata, 0);
+		ret = ctrl_pdata->panel_reset(pdata, 0);
 		if (ret) {
 			pr_err("%s: Panel reset failed. rc=%d\n",
 					__func__, ret);
@@ -121,6 +149,12 @@ static int mdss_dsi_panel_power_on(struct mdss_panel_data *pdata, int enable)
 		}
 		if (mdss_dsi_pinctrl_set_state(ctrl_pdata, false))
 			pr_debug("reset disable: pinctrl not enabled\n");
+
+		if (ctrl_pdata->panel_extra_power) {
+			ret = ctrl_pdata->panel_extra_power(pdata, enable);
+			if (ret)
+				pr_err("%s : failed to enable extra power\n", __func__);
+		}
 
 		for (i = DSI_MAX_PM - 1; i >= 0; i--) {
 			/*
@@ -390,10 +424,12 @@ static int mdss_dsi_off(struct mdss_panel_data *pdata)
 
 	mdss_dsi_clk_ctrl(ctrl_pdata, DSI_ALL_CLKS, 0);
 
+	if (!no_panel) {
 	ret = mdss_dsi_panel_power_on(pdata, 0);
 	if (ret) {
 		pr_err("%s: Panel power off failed\n", __func__);
 		return ret;
+		}
 	}
 
 	if (panel_info->dynamic_fps
@@ -707,6 +743,7 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 		return -EINVAL;
 	}
 
+
 	if (pdata->panel_info.panel_power_on) {
 		pr_warn("%s:%d Panel already on.\n", __func__, __LINE__);
 		return 0;
@@ -721,12 +758,13 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 	pinfo = &pdata->panel_info;
 	mipi = &pdata->panel_info.mipi;
 
+	if (!no_panel) {
 	ret = mdss_dsi_panel_power_on(pdata, 1);
 	if (ret) {
 		pr_err("%s:Panel power on failed. rc=%d\n", __func__, ret);
 		return ret;
 	}
-
+	}
 	mdss_dsi_clk_ctrl(ctrl_pdata, DSI_BUS_CLKS, 1);
 	if (ret) {
 		pr_err("%s: failed to enable bus clocks. rc=%d\n", __func__,
@@ -757,13 +795,19 @@ int mdss_dsi_on(struct mdss_panel_data *pdata)
 	 * data lanes for LP11 init
 	 */
 	if (mipi->lp11_init) {
-		if (mdss_dsi_pinctrl_set_state(ctrl_pdata, true))
-			pr_debug("reset enable: pinctrl not enabled\n");
-		mdss_dsi_panel_reset(pdata, 1);
-	}
+		u32 tmp;
 
-	if (mipi->init_delay)
-		usleep(mipi->init_delay);
+		tmp = MIPI_INP((ctrl_pdata->ctrl_base) + 0xac);
+		MIPI_OUTP((ctrl_pdata->ctrl_base) + 0xac, 0x1F << 16);
+		wmb();
+#if defined(CONFIG_FB_MSM_MIPI_HIMAX_WVGA_VIDEO_PANEL) || defined(CONFIG_FB_MSM_MIPI_HX8389C_QHD_VIDEO_PANEL) 
+		mdelay(5);
+#endif
+		ctrl_pdata->panel_reset(pdata, 1);
+		if (mipi->init_delay)
+			usleep(mipi->init_delay);
+		MIPI_OUTP((ctrl_pdata->ctrl_base) + 0xac, tmp);
+	}
 
 	if (mipi->force_clk_lane_hs) {
 		u32 tmp;
@@ -1237,8 +1281,17 @@ static int mdss_dsi_event_handler(struct mdss_panel_data *pdata,
 		rc = mdss_dsi_update_panel_config(ctrl_pdata,
 					(int)(unsigned long) arg);
 		break;
+	case MDSS_EVENT_FB_REGISTERED:
+		if (ctrl_pdata->registered) {
+			pr_debug("%s : event=%d, calling panel registered callback\n", __func__, event);
+			rc = ctrl_pdata->registered(pdata);
+		}
+		break;
 	default:
-		pr_debug("%s: unhandled event=%d\n", __func__, event);
+		if (ctrl_pdata->event_handler)
+			rc = ctrl_pdata->event_handler(pdata, event);
+		else
+			pr_debug("%s: unhandled event=%d\n", __func__, event);
 		break;
 	}
 	pr_debug("%s-:event=%d, rc=%d\n", __func__, event, rc);
@@ -1571,6 +1624,11 @@ int dsi_panel_device_register(struct device_node *pan_node,
 	struct platform_device *ctrl_pdev = NULL;
 	bool dynamic_fps;
 	const char *data;
+	const char panel_extra_power_gpio [3][40] = {
+			"qcom,platform-panel-extra-power-gpio1",
+			"qcom,platform-panel-extra-power-gpio2",
+			"qcom,platform-panel-extra-power-gpio3"};
+
 
 	mipi  = &(pinfo->mipi);
 
@@ -1703,6 +1761,17 @@ int dsi_panel_device_register(struct device_node *pan_node,
 		pr_err("%s:%d, Disp_en gpio not specified\n",
 						__func__, __LINE__);
 
+	for (i = 0; i < MAX_EXTRA_POWER_GPIO; i++) {
+		ctrl_pdata->panel_extra_power_gpio[i] =
+				 of_get_named_gpio(ctrl_pdev->dev.of_node,
+						panel_extra_power_gpio[i], 0);
+		if (!gpio_is_valid(ctrl_pdata->panel_extra_power_gpio[i]))
+			pr_err("%s:%d, panel_extra_power gpio%d not specified\n",
+							__func__, __LINE__, i+1);
+		else
+			pr_err("extra gpio num : %d\n", ctrl_pdata->panel_extra_power_gpio[i]);
+	}
+
 	ctrl_pdata->bklt_en_gpio = of_get_named_gpio(ctrl_pdev->dev.of_node,
 		"qcom,platform-bklight-en-gpio", 0);
 	if (!gpio_is_valid(ctrl_pdata->bklt_en_gpio))
@@ -1726,6 +1795,13 @@ int dsi_panel_device_register(struct device_node *pan_node,
 		ctrl_pdata->mode_gpio = -EINVAL;
 	}
 
+	if (ctrl_pdata->panel_gpio_request){
+		rc = ctrl_pdata->panel_gpio_request(ctrl_pdata);
+		if (rc) {
+			pr_err("gpio request failed\n");
+			return rc;
+		}
+	}
 	if (mdss_dsi_clk_init(ctrl_pdev, ctrl_pdata)) {
 		pr_err("%s: unable to initialize Dsi ctrl clks\n", __func__);
 		return -EPERM;
@@ -1801,6 +1877,14 @@ int dsi_panel_device_register(struct device_node *pan_node,
 	}
 
 	pr_debug("%s: Panel data initialized\n", __func__);
+	if (no_panel) {
+		rc = mdss_dsi_panel_power_on(&(ctrl_pdata->panel_data), 0);
+		if (rc) {
+			pr_err("%s: Panel power on failed\n", __func__);
+			return rc;
+		}
+		pr_err("%s: LCD not connected!\n",__func__);
+	}
 	return 0;
 }
 
@@ -1844,6 +1928,20 @@ static void __exit mdss_dsi_driver_cleanup(void)
 	platform_driver_unregister(&mdss_dsi_ctrl_driver);
 }
 module_exit(mdss_dsi_driver_cleanup);
+
+
+int get_lcd_attached(void)
+{
+
+#if defined(CONFIG_FB_MSM_MIPI_HIMAX_WVGA_VIDEO_PANEL) \
+	|| defined(CONFIG_FB_MSM_MIPI_S6D2AA0X_HD_VIDEO_PANEL) \
+	|| defined(CONFIG_FB_MSM_MIPI_HX8389C_QHD_VIDEO_PANEL)
+	return ((!gv_manufacture_id)? 0:1);
+#else
+	return 1;
+#endif
+}
+EXPORT_SYMBOL(get_lcd_attached);
 
 MODULE_LICENSE("GPL v2");
 MODULE_DESCRIPTION("DSI controller driver");

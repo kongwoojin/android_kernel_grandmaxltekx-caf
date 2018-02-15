@@ -608,6 +608,7 @@ static int mdss_fb_probe(struct platform_device *pdev)
 
 	mfd->ext_ad_ctrl = -1;
 	mfd->bl_level = 0;
+	mfd->bl_level_prev_scaled = 0;
 	mfd->bl_scale = 1024;
 	mfd->bl_min_lvl = 30;
 	mfd->fb_imgType = MDP_RGBA_8888;
@@ -620,6 +621,7 @@ static int mdss_fb_probe(struct platform_device *pdev)
 	INIT_LIST_HEAD(&mfd->proc_list);
 
 	mutex_init(&mfd->bl_lock);
+	mutex_init(&mfd->ctx_lock);
 
 	fbi_list[fbi_list_index++] = fbi;
 
@@ -932,8 +934,7 @@ void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 	u32 temp = bkl_lvl;
 
 	if (((!mfd->panel_power_on && mfd->dcm_state != DCM_ENTER)
-		|| !mfd->bl_updated) && !IS_CALIB_MODE_BL(mfd) &&
-		mfd->panel_info->cont_splash_enabled) {
+		|| !mfd->bl_updated) && !IS_CALIB_MODE_BL(mfd)) {
 		mfd->unset_bl_level = bkl_lvl;
 		return;
 	} else {
@@ -943,6 +944,7 @@ void mdss_fb_set_backlight(struct msm_fb_data_type *mfd, u32 bkl_lvl)
 	pdata = dev_get_platdata(&mfd->pdev->dev);
 
 	if ((pdata) && (pdata->set_backlight)) {
+		mfd->bl_level_prev_scaled = mfd->bl_level_scaled;
 		if (!IS_CALIB_MODE_BL(mfd))
 			mdss_fb_scale_bl(mfd, &temp);
 		/*
@@ -984,6 +986,7 @@ void mdss_fb_update_backlight(struct msm_fb_data_type *mfd)
 			if ((pdata) && (pdata->set_backlight)) {
 				mfd->bl_level = mfd->unset_bl_level;
 				pdata->set_backlight(pdata, mfd->bl_level);
+				mfd->bl_level_scaled = mfd->unset_bl_level;
 				mfd->bl_updated = 1;
 			}
 		}
@@ -1003,6 +1006,7 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 	if (mfd->dcm_state == DCM_ENTER)
 		return -EPERM;
 
+	mutex_lock(&mfd->ctx_lock);
 	switch (blank_mode) {
 	case FB_BLANK_UNBLANK:
 		if (!mfd->panel_power_on && mfd->mdp.on_fnc) {
@@ -1023,9 +1027,9 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 		}
 
 		mutex_lock(&mfd->bl_lock);
-		if (!mfd->bl_updated) {
+		 if (!mfd->bl_updated && mfd->bl_level_prev_scaled) {
 			mfd->bl_updated = 1;
-			mdss_fb_set_backlight(mfd, mfd->unset_bl_level);
+			mdss_fb_set_backlight(mfd, mfd->bl_level_prev_scaled);
 		}
 		mutex_unlock(&mfd->bl_lock);
 		break;
@@ -1067,6 +1071,7 @@ static int mdss_fb_blank_sub(int blank_mode, struct fb_info *info,
 		break;
 	}
 	/* Notify listeners */
+	mutex_unlock(&mfd->ctx_lock);
 	sysfs_notify(&mfd->fbi->dev->kobj, NULL, "show_blank_event");
 
 	return ret;

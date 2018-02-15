@@ -30,6 +30,7 @@
 #include <trace/events/kmem.h>
 
 static gfp_t high_order_gfp_flags = (GFP_HIGHUSER | __GFP_NOWARN |
+				     __GFP_NO_KSWAPD |
 				     __GFP_NORETRY) & ~__GFP_WAIT;
 static gfp_t low_order_gfp_flags  = (GFP_HIGHUSER | __GFP_NOWARN);
 

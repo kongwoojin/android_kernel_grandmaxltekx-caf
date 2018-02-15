@@ -93,6 +93,14 @@ config MSM_EEPROM
           and also provides support for writing data in case of FLASH ROM.
 	  Currently supports I2C, CCI and SPI protocol
 
+config MSM_OTP
+        bool "Qualcomm MSM Camera ROM Interface for Calibration support"
+        depends on MSMB_CAMERA
+        ---help---
+          Enable support for ROM Interface for Calibration
+          Provides interface for reading the Claibration data.
+          and also provides support for writing data
+
 config MSM_ISPIF
         bool "Qualcomm MSM Image Signal Processing interface support"
         depends on MSMB_CAMERA
@@ -191,6 +199,14 @@ config SP1628
 		1280 * 270. It does not support auto focus. It supports
 		few special effects like mono.
 
+config SR200PC20
+	bool "Sensor for front camera"
+	depends on MSMB_CAMERA
+	default n
+	---help---
+	  Siliconfile 2.0MP sensor,
+	  Front sensor.
+
 config GC0339
 	bool "Sensor GC0339 (BAYER .3M)"
 	depends on MSMB_CAMERA
@@ -226,6 +242,15 @@ config s5k4e1
 		supports 720P preview at 30 fps
 		and QSXGA snapshot at 15 fps.
 		This sensor driver does not support auto focus.
+
+config S5K8B1YX
+	bool "Sensor S5K8B1YX (BAYER 2M)"
+	depends on MSMB_CAMERA
+	---help---
+		LSI 2 MP Bayer Sensor, supports 2 mipi lanes,
+		preview and snapshot config at 1280*720 at 30 fps,
+		hfr video at 60, 90 and 120 fps. This sensor driver does
+		not support auto focus.
 
 config OV12830
 	bool "OmniVision OV12830 (BAYER 12MP)"

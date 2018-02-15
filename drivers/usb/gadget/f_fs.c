@@ -456,6 +456,7 @@ static ssize_t ffs_ep0_write(struct file *file, const char __user *buf,
 			ffs->state = FFS_READ_STRINGS;
 			ret = len;
 		} else {
+			dump_stack();
 			pr_info("read strings\n");
 			ret = __ffs_data_got_strings(ffs, data, len);
 			if (unlikely(ret < 0))
@@ -1448,8 +1449,15 @@ static int functionfs_bind(struct ffs_data *ffs, struct usb_composite_dev *cdev)
 		 || test_and_set_bit(FFS_FL_BOUND, &ffs->flags)))
 		return -EBADFD;
 
+#if defined(CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE)
+	printk("%s : first id = %d , old string count = %d , string count = %d\n",__func__,ffs->first_id,ffs->old_strings_count,ffs->strings_count);
+#endif
+
 	if (!ffs->first_id || ffs->old_strings_count < ffs->strings_count) {
 		int first_id = usb_string_ids_n(cdev, ffs->strings_count);
+#if defined(CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE)
+		printk("%s : first id = %d , old string count = %d , string count = %d\n",__func__,ffs->first_id,ffs->old_strings_count,ffs->strings_count);
+#endif
 		if (unlikely(first_id < 0))
 			return first_id;
 		ffs->first_id = first_id;
@@ -1463,13 +1471,18 @@ static int functionfs_bind(struct ffs_data *ffs, struct usb_composite_dev *cdev)
 	ffs->ep0req->context = ffs;
 
 	lang = ffs->stringtabs;
+#if defined(CONFIG_USB_ANDROID_SAMSUNG_COMPOSITE)
+	if( lang == NULL )
+		printk("%s :  string tab is NULL! \n",__func__);
+	else	
+#else
 	for (lang = ffs->stringtabs; *lang; ++lang) {
 		struct usb_string *str = (*lang)->strings;
 		int id = ffs->first_id;
 		for (; str->s; ++id, ++str)
 			str->id = id;
 	}
-
+#endif
 	ffs->gadget = cdev->gadget;
 	ffs_data_get(ffs);
 	return 0;

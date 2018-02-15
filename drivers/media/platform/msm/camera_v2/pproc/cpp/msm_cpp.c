@@ -1133,6 +1133,7 @@ static int cpp_open_node(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 			return rc;
 		}
 
+		iommu_attach_device(cpp_dev->domain, cpp_dev->iommu_ctx);
 		cpp_init_mem(cpp_dev);
 		cpp_dev->state = CPP_STATE_IDLE;
 	}
@@ -1210,11 +1211,7 @@ static int cpp_close_node(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 		msm_camera_io_w(0x0, cpp_dev->base + MSM_CPP_MICRO_CLKEN_CTL);
 		msm_cpp_clear_timer(cpp_dev);
 		cpp_deinit_mem(cpp_dev);
-		if (cpp_dev->iommu_state == CPP_IOMMU_STATE_ATTACHED) {
-			iommu_detach_device(cpp_dev->domain,
-				cpp_dev->iommu_ctx);
-			cpp_dev->iommu_state = CPP_IOMMU_STATE_DETACHED;
-		}
+		iommu_detach_device(cpp_dev->domain, cpp_dev->iommu_ctx);
 		cpp_release_hardware(cpp_dev);
 		msm_cpp_empty_list(processing_q, list_frame);
 		msm_cpp_empty_list(eventData_q, list_eventdata);
@@ -1517,21 +1514,11 @@ static int msm_cpp_cfg(struct cpp_device *cpp_dev,
 	}
 
 	new_frame->cpp_cmd_msg = cpp_frame_msg;
-	if (cpp_frame_msg == NULL ||
-		(new_frame->msg_len < MSM_CPP_MIN_FRAME_LENGTH)) {
-		pr_err("%s %d Length is not correct or frame message is missing\n",
-			__func__, __LINE__);
-		return -EINVAL;
-	}
-	if (cpp_frame_msg[new_frame->msg_len - 1] != MSM_CPP_MSG_ID_TRAILER) {
-		pr_err("%s %d Invalid frame message\n", __func__, __LINE__);
-		return -EINVAL;
-	}
 
 	in_phyaddr = msm_cpp_fetch_buffer_info(cpp_dev,
 		&new_frame->input_buffer_info,
-		((new_frame->input_buffer_info.identity >> 16) & 0xFFFF),
-		(new_frame->input_buffer_info.identity & 0xFFFF), &in_fd);
+		((new_frame->identity >> 16) & 0xFFFF),
+		(new_frame->identity & 0xFFFF), &in_fd);
 	if (!in_phyaddr) {
 		pr_err("error gettting input physical address\n");
 		rc = -EINVAL;
@@ -1614,12 +1601,6 @@ static int msm_cpp_cfg(struct cpp_device *cpp_dev,
 		stripe_base = STRIPE_BASE_FW_1_6_0;
 	} else {
 		pr_err("invalid fw version %08x", cpp_dev->fw_version);
-		goto ERROR3;
-	}
-
-	if ((stripe_base + num_stripes*27 + 1) != new_frame->msg_len) {
-		pr_err("Invalid frame message\n");
-		rc = -EINVAL;
 		goto ERROR3;
 	}
 
@@ -2084,34 +2065,6 @@ long msm_cpp_subdev_ioctl(struct v4l2_subdev *sd,
 		}
 		break;
 	}
-	case VIDIOC_MSM_CPP_IOMMU_ATTACH: {
-		if (cpp_dev->iommu_state == CPP_IOMMU_STATE_DETACHED) {
-			rc = iommu_attach_device(cpp_dev->domain,
-				cpp_dev->iommu_ctx);
-			if (rc < 0) {
-				pr_err("%s:%dError iommu_attach_device failed\n",
-					__func__, __LINE__);
-				rc = -EINVAL;
-			}
-			cpp_dev->iommu_state = CPP_IOMMU_STATE_ATTACHED;
-		} else {
-			pr_err("%s:%d IOMMMU attach triggered in invalid state\n",
-				__func__, __LINE__);
-			rc = -EINVAL;
-		}
-		break;
-	}
-	case VIDIOC_MSM_CPP_IOMMU_DETACH: {
-		if (cpp_dev->iommu_state == CPP_IOMMU_STATE_ATTACHED) {
-			iommu_detach_device(cpp_dev->domain,
-				cpp_dev->iommu_ctx);
-			cpp_dev->iommu_state = CPP_IOMMU_STATE_DETACHED;
-		} else {
-			pr_err("%s:%d IOMMMU attach triggered in invalid state\n",
-				__func__, __LINE__);
-		}
-		break;
-	}
 	default:
 		pr_err_ratelimited("invalid value: cmd=0x%x\n", cmd);
 		break;
@@ -2419,7 +2372,6 @@ static int cpp_probe(struct platform_device *pdev)
 	INIT_WORK((struct work_struct *)cpp_dev->work, msm_cpp_do_timeout_work);
 	cpp_dev->cpp_open_cnt = 0;
 	cpp_dev->is_firmware_loaded = 0;
-	cpp_dev->iommu_state = CPP_IOMMU_STATE_DETACHED;
 	cpp_timer.data.cpp_dev = cpp_dev;
 	atomic_set(&cpp_timer.used, 0);
 	cpp_dev->fw_name_bin = NULL;

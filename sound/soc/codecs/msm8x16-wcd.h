@@ -214,6 +214,9 @@ struct msm8x16_wcd_priv {
 	bool ear_pa_boost_set;
 	bool dec_active[NUM_DECIMATORS];
 	struct on_demand_supply on_demand_list[ON_DEMAND_SUPPLIES_MAX];
+#ifdef CONFIG_SAMSUNG_JACK	
+	int micb_2_ref_cnt;	
+#endif
 	/* mbhc module */
 	struct wcd_mbhc mbhc;
 	struct blocking_notifier_head notifier;
@@ -233,6 +236,10 @@ extern int msm8x16_register_notifier(struct snd_soc_codec *codec,
 
 extern int msm8x16_unregister_notifier(struct snd_soc_codec *codec,
 				     struct notifier_block *nblock);
+#ifdef CONFIG_SAMSUNG_JACK
+extern int msm8x16_enable_micbias2(struct snd_soc_codec *codec,
+		bool enable);
+#endif
 
 #endif
 

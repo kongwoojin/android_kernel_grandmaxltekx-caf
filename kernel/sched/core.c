@@ -82,6 +82,9 @@
 #ifdef CONFIG_PARAVIRT
 #include <asm/paravirt.h>
 #endif
+#ifdef CONFIG_SEC_DEBUG
+#include <mach/sec_debug.h>
+#endif
 
 #include "sched.h"
 #include "../workqueue_internal.h"
@@ -3262,6 +3265,13 @@ unsigned long this_cpu_load(void)
 	return this->cpu_load[0];
 }
 
+#ifdef CONFIG_RUNTIME_COMPCACHE
+unsigned long this_cpu_loadx(int i)
+{
+	struct rq *this = this_rq();
+	return this->cpu_load[i];
+}
+#endif /* CONFIG_RUNTIME_COMPCACHE */
 
 /*
  * Global load-average calculations
@@ -4222,6 +4232,10 @@ need_resched:
 		 */
 		cpu = smp_processor_id();
 		rq = cpu_rq(cpu);
+#ifdef CONFIG_SEC_DEBUG
+		sec_debug_task_sched_log(cpu, rq->curr);
+#endif
+
 	} else
 		raw_spin_unlock_irq(&rq->lock);
 

@@ -44,6 +44,10 @@
 #include "pm-boot.h"
 #include "../../../arch/arm/mach-msm/clock.h"
 
+#ifdef CONFIG_SEC_DEBUG
+#include <mach/sec_debug.h>
+#endif
+
 #define SCM_CMD_TERMINATE_PC	(0x2)
 #define SCM_CMD_CORE_HOTPLUGGED (0x10)
 #define SCM_FLUSH_FLAG_MASK	(0x3)
@@ -78,7 +82,6 @@ enum msm_pc_count_offsets {
 };
 
 static bool msm_pm_ldo_retention_enabled = true;
-static bool msm_pm_tz_flushes_cache;
 static bool msm_no_ramp_down_pc;
 static struct msm_pm_sleep_status_data *msm_pm_slp_sts;
 DEFINE_PER_CPU(struct clk *, cpu_clks);
@@ -188,12 +191,10 @@ static bool msm_pm_pc_hotplug(void)
 
 	flag = lpm_cpu_pre_pc_cb(cpu);
 
-	if (!msm_pm_tz_flushes_cache) {
-		if (flag == MSM_SCM_L2_OFF)
-			flush_cache_all();
-		else if (msm_pm_is_L1_writeback())
-			flush_cache_louis();
-	}
+	if (flag == MSM_SCM_L2_OFF)
+		flush_cache_all();
+	else if (msm_pm_is_L1_writeback())
+		flush_cache_louis();
 
 	msm_pc_inc_debug_count(cpu, MSM_PC_ENTRY_COUNTER);
 
@@ -212,12 +213,11 @@ int msm_pm_collapse(unsigned long unused)
 
 	flag = lpm_cpu_pre_pc_cb(cpu);
 
-	if (!msm_pm_tz_flushes_cache) {
-		if (flag == MSM_SCM_L2_OFF)
-			flush_cache_all();
-		else if (msm_pm_is_L1_writeback())
-			flush_cache_louis();
-	}
+	if (flag == MSM_SCM_L2_OFF)
+		flush_cache_all();
+	else if (msm_pm_is_L1_writeback())
+		flush_cache_louis();
+
 	msm_pc_inc_debug_count(cpu, MSM_PC_ENTRY_COUNTER);
 
 	scm_call_atomic1(SCM_SVC_BOOT, SCM_CMD_TERMINATE_PC, flag);
@@ -257,12 +257,20 @@ static bool __ref msm_pm_spm_power_collapse(
 
 	msm_jtag_save_state();
 
+#ifdef CONFIG_SEC_DEBUG
+        secdbg_sched_msg("+pc(I:%d,R:%d)", from_idle, notify_rpm);
+#endif
+
 #ifdef CONFIG_CPU_V7
 	collapsed = save_cpu_regs ?
 		!cpu_suspend(0, msm_pm_collapse) : msm_pm_pc_hotplug();
 #else
 	collapsed = save_cpu_regs ?
 		!cpu_suspend(0) : msm_pm_pc_hotplug();
+#endif
+
+#ifdef CONFIG_SEC_DEBUG
+        secdbg_sched_msg("-pc(%d)", collapsed);
 #endif
 
 	msm_jtag_restore_state();
@@ -800,7 +808,6 @@ static int msm_cpu_pm_probe(struct platform_device *pdev)
 	struct resource *res = NULL;
 	int ret = 0;
 	void __iomem *msm_pc_debug_counters_imem;
-	char *key;
 	int alloc_size = (MAX_NUM_CLUSTER * MAX_CPUS_PER_CLUSTER
 					* MSM_PC_NUM_COUNTERS
 					* sizeof(*msm_pc_debug_counters));
@@ -834,10 +841,6 @@ static int msm_cpu_pm_probe(struct platform_device *pdev)
 	}
 skip_save_imem:
 	if (pdev->dev.of_node) {
-		key = "qcom,tz-flushes-cache";
-		msm_pm_tz_flushes_cache =
-				of_property_read_bool(pdev->dev.of_node, key);
-
 		ret = msm_pm_clk_init(pdev);
 		if (ret) {
 			pr_info("msm_pm_clk_init returned error\n");

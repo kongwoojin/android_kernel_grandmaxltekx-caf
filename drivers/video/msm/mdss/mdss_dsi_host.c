@@ -326,7 +326,11 @@ void mdss_dsi_host_init(struct mdss_panel_data *pdata)
 	if (mdss_dsi_broadcast_mode_enabled())
 		MIPI_OUTP(ctrl_pdata->ctrl_base + 0x3C, 0x94000000);
 	else
+#if defined(CONFIG_FB_MSM_MIPI_S6D2AA0X_HD_VIDEO_PANEL)
+		MIPI_OUTP(ctrl_pdata->ctrl_base + 0x3C, 0x10000000);
+#else
 		MIPI_OUTP(ctrl_pdata->ctrl_base + 0x3C, 0x14000000);
+#endif
 
 	data = 0;
 	if (pinfo->te_sel)
@@ -1096,7 +1100,16 @@ static int mdss_dsi_cmd_dma_tx(struct mdss_dsi_ctrl_pdata *ctrl,
 	unsigned long size;
 	dma_addr_t addr;
 	struct mdss_dsi_ctrl_pdata *mctrl = NULL;
+#ifdef DEBUG_CMD
+	int i;
+	bp = tp->data;
 
+	pr_info("%s: ", __func__);
+	for (i = 0; i < tp->len; i++)
+		printk("%x ", *bp++);
+
+	pr_info("\n");
+#endif
 	bp = tp->data;
 
 	len = ALIGN(tp->len, 4);

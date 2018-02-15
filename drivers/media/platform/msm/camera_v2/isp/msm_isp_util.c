@@ -29,6 +29,35 @@ static struct msm_isp_bandwidth_mgr isp_bandwidth_mgr;
 #define MSM_MIN_REQ_VFE_CPP_BW 1700000000
 
 #define VFE40_8974V2_VERSION 0x1001001A
+
+#ifdef CAMERA_BOOST
+#define MBYTE (1ULL << 20)
+
+#define BW_MBPS(_bw) \
+{ \
+	.vectors = &(struct msm_bus_vectors){ \
+		.src = 1, \
+		.dst = 512, \
+		.ib = (_bw) * MBYTE, \
+		.ab = 0, \
+	}, \
+	.num_paths = 1, \
+}
+
+static struct msm_bus_paths bw_level_tbl[] = {
+	[0] =  BW_MBPS(381), /* At least 50 MHz on bus. */
+	[1] =  BW_MBPS(4066), /* At least 533 MHz on bus. */
+};
+
+static struct msm_bus_scale_pdata bus_client_pdata = {
+	.usecase = bw_level_tbl,
+	.num_usecases = ARRAY_SIZE(bw_level_tbl),
+	.active_only = 1,
+	.name = "Camera_boost",
+};
+static u32 bus_client;
+#endif
+
 static struct msm_bus_vectors msm_isp_init_vectors[] = {
 	{
 		.src = MSM_BUS_MASTER_VFE,
@@ -130,6 +159,12 @@ int msm_isp_init_bandwidth_mgr(enum msm_isp_hw_client client)
 	   isp_bandwidth_mgr.bus_client,
 	   isp_bandwidth_mgr.bus_vector_active_idx);
 
+#ifdef CAMERA_BOOST
+	if (!bus_client) {
+		bus_client = msm_bus_scale_register_client(&bus_client_pdata);
+		msm_bus_scale_client_update_request(bus_client, 1);
+	}
+#endif
 	mutex_unlock(&bandwidth_mgr_mutex);
 	return 0;
 }
@@ -164,7 +199,7 @@ int msm_isp_update_bandwidth(enum msm_isp_hw_client client,
 				isp_bandwidth_mgr.client_info[i].ib;
 		}
 	}
-	/*All the clients combined i.e. VFE + CPP should use atleast
+	/*All the clients combined i.e. VFE + CPP should use at least
 	minimum recommended bandwidth*/
 	if (path->vectors[0].ib < MSM_MIN_REQ_VFE_CPP_BW)
 		path->vectors[0].ib = MSM_MIN_REQ_VFE_CPP_BW;
@@ -193,6 +228,12 @@ void msm_isp_deinit_bandwidth_mgr(enum msm_isp_hw_client client)
 	msm_bus_scale_client_update_request(
 	   isp_bandwidth_mgr.bus_client, 0);
 	msm_bus_scale_unregister_client(isp_bandwidth_mgr.bus_client);
+
+#ifdef CAMERA_BOOST
+	msm_bus_scale_client_update_request(bus_client, 0);
+	msm_bus_scale_unregister_client(bus_client);
+	bus_client = 0;
+#endif
 	isp_bandwidth_mgr.bus_client = 0;
 	mutex_unlock(&bandwidth_mgr_mutex);
 }
@@ -599,14 +640,95 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
 			cmd_len);
 		return -EINVAL;
 	}
+
+	/* Validate input parameters */
 	switch (reg_cfg_cmd->cmd_type) {
-	case VFE_WRITE: {
-		if (resource_size(vfe_dev->vfe_mem) <
-			(reg_cfg_cmd->u.rw_info.reg_offset +
-			reg_cfg_cmd->u.rw_info.len)) {
-			pr_err("%s: VFE_WRITE: Invalid length\n", __func__);
+	case VFE_WRITE:
+	case VFE_READ:
+	case VFE_WRITE_MB: {
+		if ((reg_cfg_cmd->u.rw_info.reg_offset >
+			(UINT_MAX - reg_cfg_cmd->u.rw_info.len)) ||
+			((reg_cfg_cmd->u.rw_info.reg_offset +
+			reg_cfg_cmd->u.rw_info.len) >
+			resource_size(vfe_dev->vfe_mem))) {
+			pr_err("%s:%d reg_offset %d len %d res %d\n",
+				__func__, __LINE__,
+				reg_cfg_cmd->u.rw_info.reg_offset,
+				reg_cfg_cmd->u.rw_info.len,
+				(uint32_t)resource_size(vfe_dev->vfe_mem));
 			return -EINVAL;
 		}
+
+		if ((reg_cfg_cmd->u.rw_info.cmd_data_offset >
+			(UINT_MAX - reg_cfg_cmd->u.rw_info.len)) ||
+			((reg_cfg_cmd->u.rw_info.cmd_data_offset +
+			reg_cfg_cmd->u.rw_info.len) > cmd_len)) {
+			pr_err("%s:%d cmd_data_offset %d len %d cmd_len %d\n",
+				__func__, __LINE__,
+				reg_cfg_cmd->u.rw_info.cmd_data_offset,
+				reg_cfg_cmd->u.rw_info.len, cmd_len);
+			return -EINVAL;
+		}
+		break;
+	}
+
+	case VFE_WRITE_DMI_16BIT:
+	case VFE_WRITE_DMI_32BIT:
+	case VFE_WRITE_DMI_64BIT:
+	case VFE_READ_DMI_16BIT:
+	case VFE_READ_DMI_32BIT:
+	case VFE_READ_DMI_64BIT: {
+		if (reg_cfg_cmd->cmd_type == VFE_WRITE_DMI_64BIT) {
+			if ((reg_cfg_cmd->u.dmi_info.hi_tbl_offset <=
+				reg_cfg_cmd->u.dmi_info.lo_tbl_offset) ||
+				(reg_cfg_cmd->u.dmi_info.hi_tbl_offset -
+				reg_cfg_cmd->u.dmi_info.lo_tbl_offset !=
+				(sizeof(uint32_t)))) {
+				pr_err("%s:%d hi %d lo %d\n",
+					__func__, __LINE__,
+					reg_cfg_cmd->u.dmi_info.hi_tbl_offset,
+					reg_cfg_cmd->u.dmi_info.hi_tbl_offset);
+				return -EINVAL;
+			}
+			if (reg_cfg_cmd->u.dmi_info.len <= sizeof(uint32_t)) {
+				pr_err("%s:%d len %d\n",
+					__func__, __LINE__,
+					reg_cfg_cmd->u.dmi_info.len);
+				return -EINVAL;
+			}
+			if (((UINT_MAX -
+				reg_cfg_cmd->u.dmi_info.hi_tbl_offset) <
+				(reg_cfg_cmd->u.dmi_info.len -
+				sizeof(uint32_t))) ||
+				((reg_cfg_cmd->u.dmi_info.hi_tbl_offset +
+				reg_cfg_cmd->u.dmi_info.len -
+				sizeof(uint32_t)) > cmd_len)) {
+				pr_err("%s:%d hi_tbl_offset %d len %d cmd %d\n",
+					__func__, __LINE__,
+					reg_cfg_cmd->u.dmi_info.hi_tbl_offset,
+					reg_cfg_cmd->u.dmi_info.len, cmd_len);
+				return -EINVAL;
+			}
+		}
+		if ((reg_cfg_cmd->u.dmi_info.lo_tbl_offset >
+			(UINT_MAX - reg_cfg_cmd->u.dmi_info.len)) ||
+			((reg_cfg_cmd->u.dmi_info.lo_tbl_offset +
+			reg_cfg_cmd->u.dmi_info.len) > cmd_len)) {
+			pr_err("%s:%d lo_tbl_offset %d len %d cmd_len %d\n",
+				__func__, __LINE__,
+				reg_cfg_cmd->u.dmi_info.lo_tbl_offset,
+				reg_cfg_cmd->u.dmi_info.len, cmd_len);
+			return -EINVAL;
+		}
+		break;
+	}
+
+	default:
+		break;
+	}
+
+	switch (reg_cfg_cmd->cmd_type) {
+	case VFE_WRITE: {
 		msm_camera_io_memcpy(vfe_dev->vfe_base +
 			reg_cfg_cmd->u.rw_info.reg_offset,
 			cfg_data + reg_cfg_cmd->u.rw_info.cmd_data_offset/4,
@@ -614,39 +736,27 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
 		break;
 	}
 	case VFE_WRITE_MB: {
-		uint32_t *data_ptr = cfg_data +
-			reg_cfg_cmd->u.rw_info.cmd_data_offset/4;
-
-		if ((UINT_MAX - sizeof(*data_ptr) <
-					reg_cfg_cmd->u.rw_info.reg_offset) ||
-			(resource_size(vfe_dev->vfe_mem) <
-			reg_cfg_cmd->u.rw_info.reg_offset +
-			sizeof(*data_ptr))) {
-			pr_err("%s: VFE_WRITE_MB: Invalid length\n", __func__);
-			return -EINVAL;
-		}
-		msm_camera_io_w_mb(*data_ptr, vfe_dev->vfe_base +
-			reg_cfg_cmd->u.rw_info.reg_offset);
+		msm_camera_io_memcpy_mb(vfe_dev->vfe_base +
+			reg_cfg_cmd->u.rw_info.reg_offset,
+			cfg_data + reg_cfg_cmd->u.rw_info.cmd_data_offset/4,
+			reg_cfg_cmd->u.rw_info.len);
 		break;
 	}
 	case VFE_CFG_MASK: {
 		uint32_t temp;
-		if (resource_size(vfe_dev->vfe_mem) <
-				reg_cfg_cmd->u.mask_info.reg_offset)
-			return -EINVAL;
-		temp = msm_camera_io_r(vfe_dev->vfe_base +
-			reg_cfg_cmd->u.mask_info.reg_offset);
-
-		temp &= ~reg_cfg_cmd->u.mask_info.mask;
-		temp |= reg_cfg_cmd->u.mask_info.val;
 		if ((UINT_MAX - sizeof(temp) <
-					reg_cfg_cmd->u.mask_info.reg_offset) ||
+			reg_cfg_cmd->u.mask_info.reg_offset) ||
 			(resource_size(vfe_dev->vfe_mem) <
 			reg_cfg_cmd->u.mask_info.reg_offset +
 			sizeof(temp))) {
 			pr_err("%s: VFE_CFG_MASK: Invalid length\n", __func__);
 			return -EINVAL;
 		}
+		temp = msm_camera_io_r(vfe_dev->vfe_base +
+			reg_cfg_cmd->u.mask_info.reg_offset);
+
+		temp &= ~reg_cfg_cmd->u.mask_info.mask;
+		temp |= reg_cfg_cmd->u.mask_info.val;
 		msm_camera_io_w(temp, vfe_dev->vfe_base +
 			reg_cfg_cmd->u.mask_info.reg_offset);
 		break;
@@ -658,21 +768,8 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
 		uint32_t *hi_tbl_ptr = NULL, *lo_tbl_ptr = NULL;
 		uint32_t hi_val, lo_val, lo_val1;
 		if (reg_cfg_cmd->cmd_type == VFE_WRITE_DMI_64BIT) {
-			if ((UINT_MAX - reg_cfg_cmd->u.dmi_info.hi_tbl_offset <
-						reg_cfg_cmd->u.dmi_info.len) ||
-				(reg_cfg_cmd->u.dmi_info.hi_tbl_offset +
-				reg_cfg_cmd->u.dmi_info.len > cmd_len)) {
-				pr_err("Invalid Hi Table out of bounds\n");
-				return -EINVAL;
-			}
 			hi_tbl_ptr = cfg_data +
 				reg_cfg_cmd->u.dmi_info.hi_tbl_offset/4;
-		}
-
-		if (reg_cfg_cmd->u.dmi_info.lo_tbl_offset +
-			reg_cfg_cmd->u.dmi_info.len > cmd_len) {
-			pr_err("Invalid Lo Table out of bounds\n");
-			return -EINVAL;
 		}
 		lo_tbl_ptr = cfg_data +
 			reg_cfg_cmd->u.dmi_info.lo_tbl_offset/4;
@@ -706,31 +803,17 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
 		uint32_t *hi_tbl_ptr = NULL, *lo_tbl_ptr = NULL;
 		uint32_t hi_val, lo_val, lo_val1;
 		if (reg_cfg_cmd->cmd_type == VFE_READ_DMI_64BIT) {
-			if (reg_cfg_cmd->u.dmi_info.hi_tbl_offset +
-				reg_cfg_cmd->u.dmi_info.len > cmd_len) {
-				pr_err("Invalid Hi Table out of bounds\n");
-				return -EINVAL;
-			}
 			hi_tbl_ptr = cfg_data +
 				reg_cfg_cmd->u.dmi_info.hi_tbl_offset/4;
-		}
-
-		if (reg_cfg_cmd->u.dmi_info.lo_tbl_offset +
-			reg_cfg_cmd->u.dmi_info.len > cmd_len) {
-			pr_err("Invalid Lo Table out of bounds\n");
-			return -EINVAL;
 		}
 		lo_tbl_ptr = cfg_data +
 			reg_cfg_cmd->u.dmi_info.lo_tbl_offset/4;
 
-		for (i = 0; i < reg_cfg_cmd->u.dmi_info.len/4; i++) {
-			if (reg_cfg_cmd->cmd_type == VFE_READ_DMI_64BIT) {
-				hi_val = msm_camera_io_r(vfe_dev->vfe_base +
-					vfe_dev->hw_info->dmi_reg_offset);
-				*hi_tbl_ptr = hi_val;
-				hi_tbl_ptr += 2;
-			}
+		if (reg_cfg_cmd->cmd_type == VFE_READ_DMI_64BIT)
+			reg_cfg_cmd->u.dmi_info.len =
+				reg_cfg_cmd->u.dmi_info.len / 2;
 
+		for (i = 0; i < reg_cfg_cmd->u.dmi_info.len/4; i++) {
 			lo_val = msm_camera_io_r(vfe_dev->vfe_base +
 					vfe_dev->hw_info->dmi_reg_offset + 0x4);
 
@@ -740,8 +823,13 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
 				lo_val |= lo_val1 << 16;
 			}
 			*lo_tbl_ptr++ = lo_val;
-			if (reg_cfg_cmd->cmd_type == VFE_READ_DMI_64BIT)
+			if (reg_cfg_cmd->cmd_type == VFE_READ_DMI_64BIT) {
+				hi_val = msm_camera_io_r(vfe_dev->vfe_base +
+					vfe_dev->hw_info->dmi_reg_offset);
+				*hi_tbl_ptr = hi_val;
+				hi_tbl_ptr += 2;
 				lo_tbl_ptr++;
+			}
 		}
 		break;
 	}
@@ -752,10 +840,11 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
 			vfe_dev->axi_data.src_info[VFE_PIX_0].last_updt_frm_id;
 		if (vfe_dev->axi_data.frame_id[session_id] != *cfg_data
 			|| update_id == *cfg_data) {
-			pr_err("%s hw update lock failed acq %d, cur id %u, last id %u\n",
-				__func__,
-				*cfg_data,
-				vfe_dev->axi_data.frame_id[session_id],
+			pr_err("hw update lock failed,acquire id %u\n",
+				*cfg_data);
+			pr_err("hw update lock failed,current id %u\n",
+				vfe_dev->axi_data.frame_id[session_id]);
+			pr_err("hw update lock failed,last id %u\n",
 				update_id);
 			return -EINVAL;
 		}
@@ -766,8 +855,9 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
 			vfe_dev->axi_data.src_info[VFE_PIX_0].session_id;
 		if (vfe_dev->axi_data.frame_id[session_id]
 			!= *cfg_data) {
-			pr_err("hw update across frame boundary,begin id %u, end id %d\n",
-				*cfg_data,
+			pr_err("hw update across frame boundary,begin id %u\n",
+				*cfg_data);
+			pr_err("hw update across frame boundary,end id %u\n",
 				vfe_dev->axi_data.frame_id[session_id]);
 		}
 		vfe_dev->axi_data.src_info[VFE_PIX_0].last_updt_frm_id =
@@ -782,7 +872,7 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
 			if ((data_ptr < cfg_data) ||
 				(UINT_MAX / sizeof(*data_ptr) <
 				 (data_ptr - cfg_data)) ||
-				(sizeof(*data_ptr) * (data_ptr - cfg_data) >
+				(sizeof(*data_ptr) * (data_ptr - cfg_data) >=
 				 cmd_len))
 				return -EINVAL;
 			*data_ptr++ = msm_camera_io_r(vfe_dev->vfe_base +
@@ -823,6 +913,12 @@ static int msm_isp_send_hw_cmd(struct vfe_device *vfe_dev,
 		break;
 	}
 	case SET_WM_UB_SIZE: {
+		if (cmd_len < sizeof(uint32_t)) {
+			pr_err("%s:%d failed: invalid cmd len %u exp %zu\n",
+				__func__, __LINE__, cmd_len,
+				sizeof(uint32_t));
+			return -EINVAL;
+		}
 		vfe_dev->vfe_ub_size = *cfg_data;
 		break;
 	}
@@ -1050,10 +1146,6 @@ enum msm_isp_pack_fmt msm_isp_get_pack_format(uint32_t output_format)
 int msm_isp_get_bit_per_pixel(uint32_t output_format)
 {
 	switch (output_format) {
-	case V4L2_PIX_FMT_Y4:
-		return 4;
-	case V4L2_PIX_FMT_Y6:
-		return 6;
 	case V4L2_PIX_FMT_SBGGR8:
 	case V4L2_PIX_FMT_SGBRG8:
 	case V4L2_PIX_FMT_SGRBG8:
@@ -1064,30 +1156,6 @@ int msm_isp_get_bit_per_pixel(uint32_t output_format)
 	case V4L2_PIX_FMT_QRGGB8:
 	case V4L2_PIX_FMT_JPEG:
 	case V4L2_PIX_FMT_META:
-	case V4L2_PIX_FMT_NV12:
-	case V4L2_PIX_FMT_NV21:
-	case V4L2_PIX_FMT_NV14:
-	case V4L2_PIX_FMT_NV41:
-	case V4L2_PIX_FMT_YVU410:
-	case V4L2_PIX_FMT_YVU420:
-	case V4L2_PIX_FMT_YUYV:
-	case V4L2_PIX_FMT_YYUV:
-	case V4L2_PIX_FMT_YVYU:
-	case V4L2_PIX_FMT_UYVY:
-	case V4L2_PIX_FMT_VYUY:
-	case V4L2_PIX_FMT_YUV422P:
-	case V4L2_PIX_FMT_YUV411P:
-	case V4L2_PIX_FMT_Y41P:
-	case V4L2_PIX_FMT_YUV444:
-	case V4L2_PIX_FMT_YUV555:
-	case V4L2_PIX_FMT_YUV565:
-	case V4L2_PIX_FMT_YUV32:
-	case V4L2_PIX_FMT_YUV410:
-	case V4L2_PIX_FMT_YUV420:
-	case V4L2_PIX_FMT_GREY:
-	case V4L2_PIX_FMT_PAL8:
-	case V4L2_PIX_FMT_UV8:
-	case MSM_V4L2_PIX_FMT_META:
 		return 8;
 	case V4L2_PIX_FMT_SBGGR10:
 	case V4L2_PIX_FMT_SGBRG10:
@@ -1097,8 +1165,6 @@ int msm_isp_get_bit_per_pixel(uint32_t output_format)
 	case V4L2_PIX_FMT_QGBRG10:
 	case V4L2_PIX_FMT_QGRBG10:
 	case V4L2_PIX_FMT_QRGGB10:
-	case V4L2_PIX_FMT_Y10:
-	case V4L2_PIX_FMT_Y10BPACK:
 		return 10;
 	case V4L2_PIX_FMT_SBGGR12:
 	case V4L2_PIX_FMT_SGBRG12:
@@ -1108,16 +1174,20 @@ int msm_isp_get_bit_per_pixel(uint32_t output_format)
 	case V4L2_PIX_FMT_QGBRG12:
 	case V4L2_PIX_FMT_QGRBG12:
 	case V4L2_PIX_FMT_QRGGB12:
-	case V4L2_PIX_FMT_Y12:
 		return 12;
+	case V4L2_PIX_FMT_NV12:
+	case V4L2_PIX_FMT_NV21:
+	case V4L2_PIX_FMT_NV14:
+	case V4L2_PIX_FMT_NV41:
+		return 8;
 	case V4L2_PIX_FMT_NV16:
 	case V4L2_PIX_FMT_NV61:
-	case V4L2_PIX_FMT_Y16:
 		return 16;
 		/*TD: Add more image format*/
 	default:
-		msm_isp_print_fourcc_error(__func__, output_format);
-		return -EINVAL;
+		//msm_isp_print_fourcc_error(__func__, output_format);
+		pr_err("%s: Invalid output format\n", __func__);
+		return 10;
 	}
 }
 
@@ -1183,7 +1253,9 @@ static inline void msm_isp_process_overflow_irq(
 {
 	uint32_t overflow_mask;
 	uint32_t halt_restart_mask0, halt_restart_mask1;
+#if defined(CONFIG_SEC_ROSSA_PROJECT) || defined(CONFIG_SEC_J1_PROJECT)
 	uint8_t cur_stream_cnt = 0;
+#endif
 	/*Mask out all other irqs if recovery is started*/
 	if (atomic_read(&vfe_dev->error_info.overflow_state) !=
 		NO_OVERFLOW) {
@@ -1200,16 +1272,18 @@ static inline void msm_isp_process_overflow_irq(
 		get_overflow_mask(&overflow_mask);
 	overflow_mask &= *irq_status1;
 	if (overflow_mask) {
-		cur_stream_cnt = msm_isp_get_curr_stream_cnt(vfe_dev);
-		if (cur_stream_cnt == 0) {
-			/* When immediate stop is issued during streamoff and
-			   AXI bridge is halted, if write masters are still
-			   active, then it's possible to get overflow Irq
-			   because WM is still writing pixels into UB, but UB
-			   has no way to write into bus. Since everything is
-			   being stopped anyway, skip the overflow recovery */
-			return;
-		}
+#if defined(CONFIG_SEC_ROSSA_PROJECT) || defined(CONFIG_SEC_J1_PROJECT)
+	  cur_stream_cnt = msm_isp_get_curr_stream_cnt(vfe_dev);
+	  if (cur_stream_cnt == 0) {
+	    /* When immediate stop is issued during streamoff and
+	    AXI bridge is halted, if write masters are still
+		active, then it's possible to get overflow Irq
+		because WM is still writing pixels into UB, but UB
+		has no way to write into bus. Since everything is
+		being stopped anyway, skip the overflow recovery */
+		return;
+	}
+#endif
 		pr_warn("%s: Bus overflow detected: 0x%x\n",
 			__func__, overflow_mask);
 		atomic_set(&vfe_dev->error_info.overflow_state,
@@ -1311,11 +1385,9 @@ irqreturn_t msm_isp_process_irq(int irq_num, void *data)
 {
 	unsigned long flags;
 	struct msm_vfe_tasklet_queue_cmd *queue_cmd;
-	struct msm_vfe_tasklet_queue_cmd *regupdate_q_cmd;
 	struct vfe_device *vfe_dev = (struct vfe_device *) data;
 	uint32_t irq_status0, irq_status1;
 	uint32_t error_mask0, error_mask1;
-	struct msm_isp_timestamp ts;
 
 	vfe_dev->hw_info->vfe_ops.irq_ops.
 		read_irq_status(vfe_dev, &irq_status0, &irq_status1);
@@ -1342,7 +1414,7 @@ irqreturn_t msm_isp_process_irq(int irq_num, void *data)
 		ISP_DBG("%s: error_mask0/1 & error_count are set!\n", __func__);
 		return IRQ_HANDLED;
 	}
-	msm_isp_get_timestamp(&ts);
+
 	spin_lock_irqsave(&vfe_dev->tasklet_lock, flags);
 	queue_cmd = &vfe_dev->tasklet_queue_cmd[vfe_dev->taskletq_idx];
 	if (queue_cmd->cmd_used) {
@@ -1354,32 +1426,11 @@ irqreturn_t msm_isp_process_irq(int irq_num, void *data)
 	}
 	queue_cmd->vfeInterruptStatus0 = irq_status0;
 	queue_cmd->vfeInterruptStatus1 = irq_status1;
-	queue_cmd->ts = ts;
+	msm_isp_get_timestamp(&queue_cmd->ts);
 	queue_cmd->cmd_used = 1;
 	vfe_dev->taskletq_idx =
 		(vfe_dev->taskletq_idx + 1) % MSM_VFE_TASKLETQ_SIZE;
 	list_add_tail(&queue_cmd->list, &vfe_dev->tasklet_q);
-	if (vfe_dev->hw_info->vfe_ops.
-		core_ops.get_regupdate_status(irq_status0, irq_status1)) {
-		regupdate_q_cmd = &vfe_dev->
-			tasklet_regupdate_queue_cmd[vfe_dev->
-			taskletq_reg_update_idx];
-		if (regupdate_q_cmd->cmd_used) {
-			pr_err_ratelimited("%s: Tasklet Overflow", __func__);
-			list_del(&regupdate_q_cmd->list);
-		} else {
-			atomic_add(1, &vfe_dev->reg_update_cnt);
-		}
-		regupdate_q_cmd->vfeInterruptStatus0 = irq_status0;
-		regupdate_q_cmd->vfeInterruptStatus1 = irq_status1;
-		regupdate_q_cmd->ts = ts;
-		regupdate_q_cmd->cmd_used = 1;
-		vfe_dev->taskletq_reg_update_idx =
-			(vfe_dev->taskletq_reg_update_idx + 1) %
-			MSM_VFE_TASKLETQ_SIZE;
-		list_add_tail(&regupdate_q_cmd->list,
-			&vfe_dev->tasklet_regupdate_q);
-	}
 	spin_unlock_irqrestore(&vfe_dev->tasklet_lock, flags);
 	tasklet_schedule(&vfe_dev->vfe_tasklet);
 	return IRQ_HANDLED;
@@ -1391,74 +1442,46 @@ void msm_isp_do_tasklet(unsigned long data)
 	struct vfe_device *vfe_dev = (struct vfe_device *) data;
 	struct msm_vfe_irq_ops *irq_ops = &vfe_dev->hw_info->vfe_ops.irq_ops;
 	struct msm_vfe_tasklet_queue_cmd *queue_cmd;
-	struct msm_vfe_tasklet_queue_cmd *reg_update_q_cmd;
 	struct msm_isp_timestamp ts;
 	uint32_t irq_status0, irq_status1;
-	while (atomic_read(&vfe_dev->irq_cnt) ||
-		(atomic_read(&vfe_dev->reg_update_cnt))) {
-		if (atomic_read(&vfe_dev->irq_cnt)) {
-			spin_lock_irqsave(&vfe_dev->tasklet_lock, flags);
-			queue_cmd = list_first_entry(&vfe_dev->tasklet_q,
-			struct msm_vfe_tasklet_queue_cmd, list);
-			if (!queue_cmd) {
-				atomic_set(&vfe_dev->irq_cnt, 0);
-				spin_unlock_irqrestore(&vfe_dev->tasklet_lock,
-					flags);
-				continue;
-			}
-			atomic_sub(1, &vfe_dev->irq_cnt);
-			list_del(&queue_cmd->list);
-			queue_cmd->cmd_used = 0;
-			irq_status0 = queue_cmd->vfeInterruptStatus0;
-			irq_status1 = queue_cmd->vfeInterruptStatus1;
-			ts = queue_cmd->ts;
+	while (atomic_read(&vfe_dev->irq_cnt)) {
+		spin_lock_irqsave(&vfe_dev->tasklet_lock, flags);
+		queue_cmd = list_first_entry(&vfe_dev->tasklet_q,
+		struct msm_vfe_tasklet_queue_cmd, list);
+		if (!queue_cmd) {
+			atomic_set(&vfe_dev->irq_cnt, 0);
 			spin_unlock_irqrestore(&vfe_dev->tasklet_lock, flags);
-			if (atomic_read(&vfe_dev->error_info.overflow_state) !=
-				NO_OVERFLOW) {
-				pr_err_ratelimited("There is Overflow, kicking up recovery !!!!");
-				msm_isp_process_overflow_recovery(vfe_dev,
-					irq_status0, irq_status1);
-				continue;
-			}
-			ISP_DBG("%s: status0: 0x%x status1: 0x%x\n",
-				__func__, irq_status0, irq_status1);
-			irq_ops->process_reset_irq(vfe_dev,
-				irq_status0, irq_status1);
-			irq_ops->process_halt_irq(vfe_dev,
-				irq_status0, irq_status1);
-			irq_ops->process_camif_irq(vfe_dev,
-				irq_status0, irq_status1, &ts);
-			irq_ops->process_axi_irq(vfe_dev,
-				irq_status0, irq_status1, &ts);
-			irq_ops->process_stats_irq(vfe_dev,
-				irq_status0, irq_status1, &ts);
-			msm_isp_process_error_info(vfe_dev);
+			return;
 		}
-		if (atomic_read(&vfe_dev->reg_update_cnt)) {
-			spin_lock_irqsave(&vfe_dev->tasklet_lock, flags);
-			reg_update_q_cmd = list_first_entry(
-				&vfe_dev->tasklet_regupdate_q,
-				struct msm_vfe_tasklet_queue_cmd, list);
-			if (!reg_update_q_cmd) {
-				atomic_set(&vfe_dev->reg_update_cnt, 0);
-				spin_unlock_irqrestore(&vfe_dev->tasklet_lock,
-					flags);
-				continue;
-			}
-			atomic_sub(1, &vfe_dev->reg_update_cnt);
-			list_del(&reg_update_q_cmd->list);
-			reg_update_q_cmd->cmd_used = 0;
-			irq_status0 = reg_update_q_cmd->vfeInterruptStatus0;
-			irq_status1 = reg_update_q_cmd->vfeInterruptStatus1;
-			ts = reg_update_q_cmd->ts;
-			spin_unlock_irqrestore(&vfe_dev->tasklet_lock, flags);
-			if (atomic_read(&vfe_dev->error_info.overflow_state) !=
-				NO_OVERFLOW) {
-				continue;
-			}
-			irq_ops->process_reg_update(vfe_dev,
-				irq_status0, irq_status1, &ts);
+		atomic_sub(1, &vfe_dev->irq_cnt);
+		list_del(&queue_cmd->list);
+		queue_cmd->cmd_used = 0;
+		irq_status0 = queue_cmd->vfeInterruptStatus0;
+		irq_status1 = queue_cmd->vfeInterruptStatus1;
+		ts = queue_cmd->ts;
+		spin_unlock_irqrestore(&vfe_dev->tasklet_lock, flags);
+		if (atomic_read(&vfe_dev->error_info.overflow_state) !=
+			NO_OVERFLOW) {
+			pr_err_ratelimited("There is Overflow, kicking up recovery !!!!");
+			msm_isp_process_overflow_recovery(vfe_dev,
+				irq_status0, irq_status1);
+			continue;
 		}
+		ISP_DBG("%s: status0: 0x%x status1: 0x%x\n",
+			__func__, irq_status0, irq_status1);
+		irq_ops->process_reset_irq(vfe_dev,
+			irq_status0, irq_status1);
+		irq_ops->process_halt_irq(vfe_dev,
+			irq_status0, irq_status1);
+		irq_ops->process_camif_irq(vfe_dev,
+			irq_status0, irq_status1, &ts);
+		irq_ops->process_axi_irq(vfe_dev,
+			irq_status0, irq_status1, &ts);
+		irq_ops->process_stats_irq(vfe_dev,
+			irq_status0, irq_status1, &ts);
+		irq_ops->process_reg_update(vfe_dev,
+			irq_status0, irq_status1, &ts);
+		msm_isp_process_error_info(vfe_dev);
 	}
 }
 
@@ -1524,7 +1547,7 @@ int msm_isp_open_node(struct v4l2_subdev *sd, struct v4l2_subdev_fh *fh)
 	return 0;
 }
 
-#ifdef CONFIG_MSM_AVTIMER
+#if 0 //CONFIG_MSM_AVTIMER
 void msm_isp_end_avtimer(void)
 {
 	avcs_core_disable_power_collapse(0);

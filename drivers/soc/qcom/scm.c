@@ -23,6 +23,9 @@
 #include <asm/compiler.h>
 
 #include <soc/qcom/scm.h>
+#ifdef CONFIG_SEC_DEBUG
+#include <mach/sec_debug.h>
+#endif
 
 #define SCM_ENOMEM		-5
 #define SCM_EOPNOTSUPP		-4
@@ -35,7 +38,7 @@
 static DEFINE_MUTEX(scm_lock);
 
 #define SCM_EBUSY_WAIT_MS 30
-#define SCM_EBUSY_MAX_RETRY 20
+#define SCM_EBUSY_MAX_RETRY 400
 
 #define SCM_BUF_LEN(__cmd_size, __resp_size)	\
 	(sizeof(struct scm_command) + sizeof(struct scm_response) + \
@@ -186,17 +189,48 @@ static u32 smc(u32 cmd_addr)
 	return r0;
 }
 
+#ifdef CONFIG_TIMA_LKMAUTH
+#if defined(CONFIG_ARCH_MSM8916) || defined(CONFIG_ARCH_MSM8939)
+static void __wrap_flush_cache_all(void* vp)
+{
+	flush_cache_all();
+}
+#endif
+
+pid_t pid_from_lkm = -1;
+#endif
 static int __scm_call(const struct scm_command *cmd)
 {
+#ifdef CONFIG_TIMA_LKMAUTH
+	int flush_all_need;
+#endif
 	int ret;
 	u32 cmd_addr = virt_to_phys(cmd);
 
+#ifdef CONFIG_TIMA_LKMAUTH
+	/*
+	 * in case of QSEE command
+	 */
+	flush_all_need = ((cmd->id & 0x0003FC00) == (252 << 10));
+#endif
 	/*
 	 * Flush the command buffer so that the secure world sees
 	 * the correct data.
 	 */
 	__cpuc_flush_dcache_area((void *)cmd, cmd->len);
 	outer_flush_range(cmd_addr, cmd_addr + cmd->len);
+
+#ifdef CONFIG_TIMA_LKMAUTH
+	if (flush_all_need && (pid_from_lkm == current_thread_info()->task->pid)) {
+		flush_cache_all();
+
+#if defined(CONFIG_ARCH_MSM8916) || defined(CONFIG_ARCH_MSM8939)
+		smp_call_function((void (*)(void *))__wrap_flush_cache_all, NULL, 1);
+#endif
+
+		outer_flush_all();
+	}
+#endif
 
 	ret = smc(cmd_addr);
 	if (ret < 0)
@@ -267,9 +301,18 @@ static int scm_call_common(u32 svc_id, u32 cmd_id, const void *cmd_buf,
 	if (cmd_buf)
 		memcpy(scm_get_command_buffer(scm_buf), cmd_buf, cmd_len);
 
+#ifdef CONFIG_SEC_DEBUG
+	sec_debug_secure_log(svc_id, cmd_id);
+#endif
+
 	mutex_lock(&scm_lock);
 	ret = __scm_call(scm_buf);
 	mutex_unlock(&scm_lock);
+
+#ifdef CONFIG_SEC_DEBUG	
+	sec_debug_secure_log(svc_id, cmd_id);
+#endif
+
 	if (ret)
 		return ret;
 

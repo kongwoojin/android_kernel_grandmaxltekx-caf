@@ -541,6 +541,21 @@ int msm_camera_get_dt_power_setting_data(struct device_node *of_node,
 				power_down_setting_t;
 			end--;
 		}
+
+#if defined(CONFIG_SEC_ROSSA_PROJECT) || defined(CONFIG_SEC_J1_PROJECT)
+		for (c = 0; c < size; c ++) {
+			if(power_info->power_down_setting[c].seq_val == SENSOR_GPIO_VDIG)
+			{
+			      int i = c + 1;
+			      power_down_setting_t = power_info->power_down_setting[c];
+			      power_info->power_down_setting[c] = power_info->power_down_setting[i];
+			      power_info->power_down_setting[i] = power_down_setting_t;
+			      power_info->power_down_setting[c].delay = 0;
+			      break;
+			}
+		}
+#endif
+
 	}
 	return rc;
 ERROR2:
@@ -1312,7 +1327,7 @@ int msm_camera_power_down(struct msm_camera_power_ctrl_t *ctrl,
 			gpio_set_value_cansleep(
 				ctrl->gpio_conf->gpio_num_info->gpio_num
 				[pd->seq_val],
-				pd->config_val);
+				0);
 			break;
 		case SENSOR_VREG:
 			if (pd->seq_val >= CAM_VREG_MAX) {

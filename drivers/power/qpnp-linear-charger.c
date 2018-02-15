@@ -1177,7 +1177,8 @@ static int get_prop_batt_temp(struct qpnp_lbc_chip *chip)
 	int rc = 0;
 	struct qpnp_vadc_result results;
 
-	if (chip->cfg_use_fake_battery || !get_prop_batt_present(chip))
+	//Block temp if (chip->cfg_use_fake_battery || !get_prop_batt_present(chip))
+	if ( 1 || chip->cfg_use_fake_battery || !get_prop_batt_present(chip))
 		return DEFAULT_TEMP;
 
 	rc = qpnp_vadc_read(chip->vadc_dev, LR_MUX1_BATT_THERM, &results);

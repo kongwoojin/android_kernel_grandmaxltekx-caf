@@ -21,8 +21,19 @@ dsi-v2-objs = dsi_v2.o dsi_host_v2.o dsi_io_v2.o
 obj-$(CONFIG_FB_MSM_MDSS_MDP3) += dsi-v2.o
 
 mdss-dsi-objs := mdss_dsi.o mdss_dsi_host.o mdss_dsi_cmd.o mdss_dsi_status.o
-mdss-dsi-objs += mdss_dsi_panel.o
+#mdss-dsi-objs += mdss_dsi_panel.o
+ifeq ($(CONFIG_FB_MSM_MIPI_HIMAX_WVGA_VIDEO_PANEL),y)
+mdss-dsi-objs += mdss_hx8369b_wvga_dsi_panel.o
+else ifeq ($(CONFIG_FB_MSM_MIPI_HX8389C_QHD_VIDEO_PANEL),y)
+mdss-dsi-objs += mdss_hx8389c_qHD_dsi_panel.o
+else ifeq ($(CONFIG_FB_MSM_MIPI_S6D2AA0X_HD_VIDEO_PANEL),y)
+mdss-dsi-objs += mdss_s6d2aa0x_dsi_panel.o
+else
+mdss-dsi-objs += mdss_dsi_samsung_panel.o smart_mtp_ea8061.o
+endif
 mdss-dsi-objs += msm_mdss_io_8974.o
+obj-$(CONFIG_MDNIE_TFT_MSM8X16) += mdnie_tft_msm8x16.o
+obj-$(CONFIG_MDNIE_TFT_HIMAX) += mdnie_tft_himax.o
 obj-$(CONFIG_FB_MSM_MDSS) += mdss-dsi.o
 obj-$(CONFIG_FB_MSM_MDSS_EDP_PANEL) += mdss_edp.o
 obj-$(CONFIG_FB_MSM_MDSS_EDP_PANEL) += mdss_edp_aux.o

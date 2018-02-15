@@ -76,7 +76,6 @@ int mdss_mdp_pipe_panic_signal_ctrl(struct mdss_mdp_pipe *pipe, bool enable)
 	writel_relaxed(panic_robust_ctrl,
 				mdata->mdp_base + MMSS_MDP_PANIC_ROBUST_CTRL);
 	mdss_mdp_clk_ctrl(MDP_BLOCK_POWER_OFF, false);
-
 end:
 	return 0;
 }

@@ -191,6 +191,7 @@ struct msm_fb_data_type {
 	u32 panel_orientation;
 
 	u32 dst_format;
+	int resume_state;
 	int panel_power_on;
 	struct disp_info_type_suspend suspend;
 
@@ -210,8 +211,10 @@ struct msm_fb_data_type {
 	u32 unset_bl_level;
 	u32 bl_updated;
 	u32 bl_level_scaled;
+	u32 bl_level_prev_scaled;
 	struct mutex bl_lock;
 
+	struct mutex ctx_lock;
 	struct platform_device *pdev;
 
 	u32 mdp_fb_page_protection;

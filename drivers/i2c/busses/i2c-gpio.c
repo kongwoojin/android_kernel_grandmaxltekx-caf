@@ -18,6 +18,8 @@
 #include <linux/of_gpio.h>
 #include <linux/of_i2c.h>
 
+#define NEW_GPIO_GET
+
 struct i2c_gpio_private_data {
 	struct i2c_adapter adap;
 	struct i2c_algo_bit_data bit_data;
@@ -88,11 +90,16 @@ static int i2c_gpio_getscl(void *data)
 static int of_i2c_gpio_get_pins(struct device_node *np,
 				unsigned int *sda_pin, unsigned int *scl_pin)
 {
+#ifdef NEW_GPIO_GET
+	*sda_pin = of_get_named_gpio(np, "i2c-gpio-sda", 0);
+	*scl_pin = of_get_named_gpio(np, "i2c-gpio-scl", 0);
+#else
 	if (of_gpio_count(np) < 2)
 		return -ENODEV;
 
 	*sda_pin = of_get_gpio(np, 0);
 	*scl_pin = of_get_gpio(np, 1);
+#endif
 
 	if (!gpio_is_valid(*sda_pin) || !gpio_is_valid(*scl_pin)) {
 		pr_err("%s: invalid GPIO pins, sda=%d/scl=%d\n",
@@ -103,10 +110,11 @@ static int of_i2c_gpio_get_pins(struct device_node *np,
 	return 0;
 }
 
-static void of_i2c_gpio_get_props(struct device_node *np,
+static void of_i2c_gpio_get_props(struct platform_device *pdev,
 				  struct i2c_gpio_platform_data *pdata)
 {
 	u32 reg;
+	struct device_node *np = pdev->dev.of_node;
 
 	of_property_read_u32(np, "i2c-gpio,delay-us", &pdata->udelay);
 
@@ -119,6 +127,8 @@ static void of_i2c_gpio_get_props(struct device_node *np,
 		of_property_read_bool(np, "i2c-gpio,scl-open-drain");
 	pdata->scl_is_output_only =
 		of_property_read_bool(np, "i2c-gpio,scl-output-only");
+
+	of_property_read_u32(np, "cell-index", &pdev->id);
 }
 
 static int i2c_gpio_probe(struct platform_device *pdev)
@@ -169,7 +179,7 @@ static int i2c_gpio_probe(struct platform_device *pdev)
 	if (pdev->dev.of_node) {
 		pdata->sda_pin = sda_pin;
 		pdata->scl_pin = scl_pin;
-		of_i2c_gpio_get_props(pdev->dev.of_node, pdata);
+		of_i2c_gpio_get_props(pdev, pdata);
 	} else {
 		memcpy(pdata, pdev->dev.platform_data, sizeof(*pdata));
 	}

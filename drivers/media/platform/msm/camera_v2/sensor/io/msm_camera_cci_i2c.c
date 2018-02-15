@@ -81,6 +81,7 @@ int32_t msm_camera_cci_i2c_read_seq(struct msm_camera_i2c_client *client,
 		pr_err("%s:%d no memory\n", __func__, __LINE__);
 		return -ENOMEM;
 	}
+	cci_ctrl.status = 0; //prevent
 	cci_ctrl.cmd = MSM_CCI_I2C_READ;
 	cci_ctrl.cci_info = client->cci_client;
 	cci_ctrl.cfg.cci_i2c_read_cfg.addr = addr;
@@ -126,6 +127,14 @@ int32_t msm_camera_cci_i2c_write(struct msm_camera_i2c_client *client,
 	cci_ctrl.cfg.cci_i2c_write_cfg.data_type = data_type;
 	cci_ctrl.cfg.cci_i2c_write_cfg.addr_type = client->addr_type;
 	cci_ctrl.cfg.cci_i2c_write_cfg.size = 1;
+#if defined(CONFIG_SR200PC20)
+	if (addr == 0xff){
+		pr_err("delay START = %d\n", (int)data*10);
+		mdelay(data*10);
+		return 0;
+	}
+#endif
+
 	rc = v4l2_subdev_call(client->cci_client->cci_subdev,
 			core, ioctl, VIDIOC_MSM_CCI_CFG, &cci_ctrl);
 	if (rc < 0) {

@@ -288,4 +288,19 @@ config SND_SOC_MSMPLUTONIUM
 	 the machine drivers and the corresponding
 	 DAI-links.
 
+config SAMSUNG_AUDIO
+	tristate "samsung audio feature"
+	help
+	 To add support for samsung audio solution
+
+config AUDIO_SPEAKER_OUT_NXP_AMP_ENABLE
+	tristate "samsung audio speaker NXP amp feature"
+	help
+	 To add support for speaker NXP amp
+
+config AUDIO_QUAT_I2S_ENABLE
+	tristate "QUAT_I2S feature"
+	help
+	 To add support for quat_i2s 
+
 endmenu

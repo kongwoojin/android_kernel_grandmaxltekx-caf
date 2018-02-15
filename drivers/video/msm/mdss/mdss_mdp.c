@@ -62,6 +62,7 @@
 #define AXI_HALT_TIMEOUT_US	0x4000
 
 struct mdss_data_type *mdss_res;
+bool no_panel;
 
 static int mdss_fb_mem_get_iommu_domain(void)
 {
@@ -714,18 +715,14 @@ int mdss_iommu_ctrl(int enable)
 
 	if (enable) {
 
-		if (mdata->iommu_ref_cnt == 0) {
-			mdss_bus_scale_set_quota(MDSS_HW_IOMMU, SZ_1M, 0, SZ_1M);
+		if (mdata->iommu_ref_cnt == 0)
 			rc = mdss_iommu_attach(mdata);
-		}
 		mdata->iommu_ref_cnt++;
 	} else {
 		if (mdata->iommu_ref_cnt) {
 			mdata->iommu_ref_cnt--;
-			if (mdata->iommu_ref_cnt == 0) {
+			if (mdata->iommu_ref_cnt == 0)
 				rc = mdss_iommu_dettach(mdata);
-				mdss_bus_scale_set_quota(MDSS_HW_IOMMU, 0, 0, 0);
-			}
 		} else {
 			pr_err("unbalanced iommu ref\n");
 		}
@@ -1278,6 +1275,14 @@ static int mdss_mdp_get_pan_cfg(struct mdss_panel_cfg *pan_cfg)
 		pr_err("pan_name=[%s] invalid\n", pan_name);
 		pan_cfg->pan_intf = MDSS_PANEL_INTF_INVALID;
 		return -EINVAL;
+	}
+
+	if (!strcmp(pan_name, "no_panel")) {
+		pr_err("%s: No panel attached %s\n",__func__, pan_name);
+		no_panel = true;
+		return -ENODEV;
+	} else {
+		no_panel = false;
 	}
 
 	for (i = 0; ((pan_name + i) < t) && (i < 4); i++)
