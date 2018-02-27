@@ -1104,8 +1104,6 @@ static int conf_int_codec_mux(struct msm8916_asoc_mach_data *pdata)
 #endif 
 
 	iowrite32(val, vaddr);
-	pr_debug("%s: spkr after mux addr = %x val =%x\n", __func__,
-			LPASS_CSR_GP_IO_MUX_SPKR_CTL, ioread32(vaddr));
 	iounmap(vaddr);
 	vaddr = ioremap(LPASS_CSR_GP_IO_MUX_MIC_CTL , 4);
 	if (!vaddr) {
@@ -1116,8 +1114,6 @@ static int conf_int_codec_mux(struct msm8916_asoc_mach_data *pdata)
 	val = ioread32(vaddr);
 	val = val | 0x00220002;
 	iowrite32(val, vaddr);
-	pr_debug("%s: mic after mux addr = %x val =%x\n",
-		 __func__, LPASS_CSR_GP_IO_MUX_MIC_CTL, ioread32(vaddr));
 	iounmap(vaddr);
 	return ret;
 }
@@ -2224,7 +2220,7 @@ static int msm8x16_setup_hs_jack(struct platform_device *pdev,
 
 int get_cdc_gpio_lines(struct pinctrl *pinctrl, int ext_pa)
 {
-	pr_debug("%s: ext_pa   %d\n", __func__, ext_pa);
+	pr_debug("%s\n", __func__);
 #ifdef CONFIG_AUDIO_QUAT_I2S_ENABLE
 	switch (ext_pa & (SEC_MI2S_ID | QUAT_MI2S_ID)) {
 #else
@@ -2369,6 +2365,23 @@ static int msm8x16_asoc_machine_probe(struct platform_device *pdev)
 		goto err;
 	}
 
+	pdata->vaddr_gpio_mux_spkr_ctl =
+		ioremap(LPASS_CSR_GP_IO_MUX_SPKR_CTL , 4);
+	if (!pdata->vaddr_gpio_mux_spkr_ctl) {
+		pr_err("%s ioremap failure for addr %x",
+				__func__, LPASS_CSR_GP_IO_MUX_SPKR_CTL);
+		ret = -ENOMEM;
+		goto err;
+	}
+	pdata->vaddr_gpio_mux_mic_ctl =
+		ioremap(LPASS_CSR_GP_IO_MUX_MIC_CTL , 4);
+	if (!pdata->vaddr_gpio_mux_mic_ctl) {
+		pr_err("%s ioremap failure for addr %x",
+				__func__, LPASS_CSR_GP_IO_MUX_MIC_CTL);
+		ret = -ENOMEM;
+		goto err;
+	}
+
 	ret = of_property_read_u32(pdev->dev.of_node, card_dev_id, &id);
 	if (ret) {
 		dev_err(&pdev->dev,
@@ -2378,10 +2391,6 @@ static int msm8x16_asoc_machine_probe(struct platform_device *pdev)
 
 	pdev->id = id;
 	dev_set_name(&pdev->dev, "%s.%d", "msm-snd-card", id);
-	/*sync up pdev->name & dev name*/
-
-	//8916 CL2480208 , booting test * function test * SSR * enctryption test
-	pdev->name = pdev->dev.kobj.name;
 
 	dev_dbg(&pdev->dev, "%s: dev name %s, id:%d\n", __func__,
 		 dev_name(&pdev->dev), pdev->id);
@@ -2396,7 +2405,7 @@ static int msm8x16_asoc_machine_probe(struct platform_device *pdev)
 	ret = of_property_read_u32(pdev->dev.of_node, mclk, &id);
 	if (ret) {
 		dev_err(&pdev->dev,
-			"%s: missing %s in dt node\n", __func__, mclk);
+			"%s: missing %s in dt node\n", __func__, card_dev_id);
 		id = DEFAULT_MCLK_RATE;
 	}
 	pdata->mclk_freq = id;
@@ -2538,6 +2547,10 @@ static int msm8x16_asoc_machine_probe(struct platform_device *pdev)
 	return 0;
 err:
 	devm_kfree(&pdev->dev, pdata);
+	if (pdata->vaddr_gpio_mux_spkr_ctl)
+		iounmap(pdata->vaddr_gpio_mux_spkr_ctl);
+	if (pdata->vaddr_gpio_mux_mic_ctl)
+		iounmap(pdata->vaddr_gpio_mux_mic_ctl);
 	return ret;
 }
 
@@ -2546,6 +2559,10 @@ static int msm8x16_asoc_machine_remove(struct platform_device *pdev)
 	struct snd_soc_card *card = platform_get_drvdata(pdev);
 	struct msm8916_asoc_mach_data *pdata = snd_soc_card_get_drvdata(card);
 
+	if (pdata->vaddr_gpio_mux_spkr_ctl)
+		iounmap(pdata->vaddr_gpio_mux_spkr_ctl);
+	if (pdata->vaddr_gpio_mux_mic_ctl)
+		iounmap(pdata->vaddr_gpio_mux_mic_ctl);
 	snd_soc_unregister_card(card);
 	mutex_destroy(&pdata->cdc_mclk_mutex);
 	return 0;
